@@ -107,12 +107,15 @@ def draw_and_save_final_bbox(rgb_image, bbox, save_path="final_bbox.png"):
         save_path (str): 저장할 이미지 경로
     """
     x1, y1, x2, y2 = bbox  # 바운딩박스 좌표 가져오기
+    text = f"({x1}, {y1})"
 
     # 바운딩 박스 그리기
     image_with_box = rgb_image.copy()
     cv2.rectangle(image_with_box, (x1, y1), (x2, y2), (0, 255, 0), 3)  # 초록색 박스
-    label = f"Class {cls_id}"
-    cv2.putText(image_with_box, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    cv2.putText(image_with_box, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    
+    # 텍스트로 좌표 출력 (x1, y1)
+    cv2.putText(image_with_box, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
     # Matplotlib을 사용해 저장
     plt.figure(figsize=(8, 6))

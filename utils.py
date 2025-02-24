@@ -25,20 +25,20 @@ class Config:
     depth_scale = 1000
     k = 10
     threshold = 0.9
-    voxel_size = 50
+    voxel_size = 50 #mm단위이므로 5cm임
 
 class Point:
     def __init__(self, position, normal=None, isGround=False):
-        self.position = position
-        self.normal = normal
-        self.isGround = isGround
+        self.position = position # 3d 좌표
+        self.normal = normal # 법벡터
+        self.isGround = isGround 
 
 class VoxelGrid:
     def __init__(self, points, voxel_size):
         self.voxel_size = voxel_size
-        self.points = points
+        self.points = points # 각 점의 x, y ,z 좌표를 저장함. points[i] = [x, y ,z]
         self.voxel_grid = {}
-        for i, pt in enumerate(points):
+        for i, pt in enumerate(points): #  포인트들을 voxelgrid에 할당함
             voxel_key = tuple(np.floor(pt.position / voxel_size).astype(int))
             if voxel_key not in self.voxel_grid:
                 self.voxel_grid[voxel_key] = []
@@ -91,7 +91,7 @@ def preprocessPointCloud(points, voxel_size=Config.voxel_size, k=Config.k, thres
         pt.isGround = np.dot(normal, np.array([0, 0, 1])) > threshold
 
     # Remove ground points
-    points_without_ground = [pt for pt in points if not pt.isGround]
+    points_without_ground = [pt for pt in points if not pt.isGround] # point 객체
     ground_points = [pt for pt in points if pt.isGround]
     return points_without_ground, ground_points
 
@@ -129,25 +129,37 @@ def preprocess_RGBimg(rgb_image, points, ground_points, intrinsics = Config.intr
 
 
 
-def depth_to_pointcloud(depth_map, intrinsic_matrix=Config.intrinsics, depth_scale=Config.depth_scale):
-    """
-    Open3D를 사용하여 Depth 이미지를 포인트클라우드로 변환.
-    :param depth_map: (H, W) 형태의 NumPy 배열 (Depth 이미지)
-    :param intrinsic_matrix: 3x3 형태의 카메라 내적 행렬 (fx, fy, cx, cy 포함)
-    :param depth_scale: Depth 값의 스케일링 (RealSense는 1000.0을 사용)
-    :return: Open3D PointCloud 객체
-    """
-    # ✅ CUDA 연산 없이 바로 Open3D Tensor로 변환 (PyTorch X)
-    depth_o3d = o3d.core.Tensor(depth_map.astype(np.float32) / depth_scale, dtype=o3d.core.Dtype.Float32)
+def depth_to_pointcloud(depth_map, intrinsic_matrix = Config.intrinsic_matrix, depth_scale=Config.depth_scale):
 
-    # ✅ Open3D의 Tensor 기반 Intrinsic 설정 (GPU 최적화됨)
-    intrinsic_o3d = o3d.core.Tensor(intrinsic_matrix, dtype=o3d.core.Dtype.Float64)
+    fx = intrinsic_matrix[0, 0]
+    fy = intrinsic_matrix[1, 1]
+    cx = intrinsic_matrix[0, 2]
+    cy = intrinsic_matrix[1, 2]
+    
+    height, width = depth_map.shape
+    points = []
+    
+    # 각 픽셀에 대해 3D 좌표 계산
+    for v in range(height):
+        for u in range(width):
+            depth_val = depth_map[v, u] / depth_scale  # mm를 meter로 변환
+            
+            if depth_val == 0:  # 깊이 값이 0인 경우는 건너뛰기
+                continue
+            
+            # 2D 좌표 (u, v)를 3D 좌표 (X, Y, Z)로 변환
+            X = (u - cx) * depth_val / fx
+            Y = (v - cy) * depth_val / fy
+            Z = depth_val
+            
+            # Point 객체 생성
+            pt = Point(position=np.array([X, Y, Z]))
+            points.append(pt)
+            print(f"Pixel ({u}, {v}): Depth: {depth_val}, X: {X}, Y: {Y}, Z: {Z}")
 
-    # ✅ Open3D GPU 기반 변환 (to_legacy() 사용 안 함)
-    pcd = o3d.t.geometry.PointCloud.create_from_depth_image(depth_o3d, intrinsic_o3d)
-    #points = pcd.point.positions.numpy()  # NumPy 배열로 변환
-    #return points
-    return pcd
+    
+    return points
+
 
 def project_to_2d(points, depth_scale = Config.depth_scale,intrinsics=Config.intrinsics): 
     """
@@ -163,31 +175,30 @@ def project_to_2d(points, depth_scale = Config.depth_scale,intrinsics=Config.int
     return np.column_stack((u, v))
 
 
-# def pointcloud_visualization(points, save_path="pointcloud_plot.png"):
-#     fig = plt.figure(figsize=(10, 7))
-#     ax = fig.add_subplot(111, projection='3d')
+def pointcloud_visualization(points, filename="pointcloud.png"):
+    # 포인트들의 x, y, z 좌표 추출
+    x_coords = [pt.position[0] for pt in points]
+    y_coords = [pt.position[1] for pt in points]
+    z_coords = [pt.position[2] for pt in points]
 
-#     # X, Y, Z 좌표를 산점도로 표현
-#     ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=1, color='b')
+    # 3D 플롯 생성
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
 
-#     # 축 레이블
-#     ax.set_xlabel('X')
-#     ax.set_ylabel('Y')
-#     ax.set_zlabel('Z')
+    # 포인트들을 점으로 플로팅
+    ax.scatter(x_coords, y_coords, z_coords, c='b', marker='o', s=1)  # 파란색 점, 크기 1
 
-#     # 플롯 보여주기 (파일로 저장도 가능)
-#     plt.savefig(save_path, dpi=300)
-#     plt.close()
+    # 축 라벨
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
 
-#     print(f"포인트 클라우드 이미지가 저장되었습니다: {save_path}")
+    # 그래프 제목
+    ax.set_title('Point Cloud Visualization')
 
-def pointcloud_visualization(points):
-    # Open3D 포인트클라우드 객체 생성
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points)  # NumPy -> Open3D 변환
-
-    # 3D 시각화 실행
-    o3d.visualization.draw_geometries([pcd])
+    # 그래프 이미지 저장 (PNG 또는 JPG)
+    plt.savefig(filename, dpi=300)
+    plt.close()  # 그래프 닫기
 
 
 
@@ -363,7 +374,7 @@ def get_closest_box_with_depth(boxes, depth_map):
 
     return (closest_cls_id, closest_box) 
 
-def extract_plane_ransac(depth_map, intrinsic_matrix=Config.intrinsic_matrix, threshold=0.01):
+def extract_plane_ransac(points, intrinsic_matrix=Config.intrinsic_matrix, threshold=0.01):
     """
     Depth 이미지에서 여러 평면을 추출하고, 각 평면의 최소 Depth 값을 계산하여
     가장 가까운 평면을 선택합니다.
@@ -372,12 +383,14 @@ def extract_plane_ransac(depth_map, intrinsic_matrix=Config.intrinsic_matrix, th
     :param threshold: RANSAC에서 평면과의 거리 기준
     :return: 가장 가까운 평면에 해당하는 포인트들 (inliers)
     """
-    # Depth 이미지를 포인트클라우드로 변환
-    pcd = depth_to_pointcloud(depth_map, intrinsic_matrix)
-    
+    # points를 pcd 객체로 변환
+    pcd = o3d.geometry.PointCloud()
+    xyz = np.array([pt.position for pt in points])
+    pcd.points = o3d.utility.Vector3dVector(xyz)
+
     # RANSAC을 이용해 여러 평면 모델 추출
     planes = []
-    for _ in range(10):  # 평면을 여러 개 추출 (예: 10번 반복)
+    for _ in range(5):  # 평면을 n개 추출
         plane_model, inliers = pcd.segment_plane(distance_threshold=threshold, ransac_n=3, num_iterations=1000)
         inlier_cloud = pcd.select_by_index(inliers)
         planes.append((plane_model, inlier_cloud))
