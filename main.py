@@ -13,8 +13,23 @@ class Config:
 
 depth_map, rgb_image = utils.align_depth_to_rgb(Config.depth_path, Config.rgb_path, 10)
 
-##### TensorRT YOLO 모델 로드
+##### YOLO 모델 로드
 results = yolo.detect(rgb_image)
+
+#전처리 위한 pointcloud 변환 -> groundplane 날리기 -> rgb img에서도 groundplane 자르기
+points = utils.depth_to_pointcloud(depth_map) # 3d 좌표로 반환됨
+
+print(type(points))  # numpy.ndarray 확인
+print(points.shape)  # 형태인지 확인
+
+
+#디버깅용
+utils.pointcloud_visualization(points)
+
+# points_without_ground, ground_points = utils.preprocessPointCloud(points)
+
+# rgb_without_ground = utils.preprocess_RGBimg(rgb_image, points, ground_points)
+
 
 
 

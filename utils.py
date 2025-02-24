@@ -1,10 +1,14 @@
 import numpy as np
 import cv2
 import pyrealsense2 as rs
+from scipy.spatial import KDTree
+from sklearn.neighbors import NearestNeighbors
 import torch
 import stairs
 import os
 import open3d as o3d
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 
 
@@ -15,12 +19,117 @@ class Config:
     [fx,  0, cx],  # 초점 거리 fx, 주점(cx)
     [ 0, fy, cy],  # 초점 거리 fy, 주점(cy)
     [ 0,  0,  1]   # 변환을 위한 마지막 행 (고정)
+    
 ])
-    depth_scale = 0.001
+    intrinsics = 605.9815, 606.1337, 308.5001, 246.4238
+    depth_scale = 1000
+    k = 10
+    threshold = 0.9
+    voxel_size = 50
+
+class Point:
+    def __init__(self, position, normal=None, isGround=False):
+        self.position = position
+        self.normal = normal
+        self.isGround = isGround
+
+class VoxelGrid:
+    def __init__(self, points, voxel_size):
+        self.voxel_size = voxel_size
+        self.points = points
+        self.voxel_grid = {}
+        for i, pt in enumerate(points):
+            voxel_key = tuple(np.floor(pt.position / voxel_size).astype(int))
+            if voxel_key not in self.voxel_grid:
+                self.voxel_grid[voxel_key] = []
+            self.voxel_grid[voxel_key].append(i)
+        
+        # Building a k-d tree for fast k-NN search
+        self.tree = NearestNeighbors(n_neighbors=Config.k, algorithm='kd_tree')
+        point_positions = np.array([pt.position for pt in points])  # assuming pt.position is a 3D vector
+        self.tree.fit(point_positions)
+
+    def getKNN(self, position, k, search_radius, points):
+        # Use the k-d tree to find k nearest neighbors within the search radius
+        distances, indices = self.tree.radius_neighbors([position], radius=search_radius)
+        
+        # Filter out the neighbors that are beyond the search radius
+        neighbors = [idx for idx in indices[0] if np.linalg.norm(points[idx].position - position) <= search_radius]
+        
+        return neighbors[:k]  # return the first k neighbors
+
+
+def preprocessPointCloud(points, voxel_size=Config.voxel_size, k=Config.k, threshold=Config.threshold):
+    grid = VoxelGrid(points, voxel_size)
+    search_radius = voxel_size * 1.5
+
+    # Using the bottom 80% of the point cloud
+    min_y = np.min([pt.position[1] for pt in points])
+    max_y = np.max([pt.position[1] for pt in points])
+    bottom_80_percent = min_y + (max_y - min_y) * 0.2  # 20% 지점부터 하단 80%
+
+    points_bottom_80 = [pt for pt in points if pt.position[1] <= bottom_80_percent]
+
+    for pt in points_bottom_80:
+        neighbors = grid.getKNN(pt.position, k, search_radius, points)
+        
+        if len(neighbors) < k:
+            pt.isGround = False
+            continue
+        
+        # Compute covariance matrix
+        mean = np.mean([points[idx].position for idx in neighbors], axis=0)
+        covariance = np.cov([points[idx].position - mean for idx in neighbors], rowvar=False)
+
+        # Eigen decomposition
+        eigvals, eigvecs = np.linalg.eigh(covariance)
+        normal = eigvecs[:, np.argmin(eigvals)]  # Smallest eigenvalue corresponds to normal
+
+        if normal[2] < 0:
+            normal = -normal
+        pt.normal = normal
+        pt.isGround = np.dot(normal, np.array([0, 0, 1])) > threshold
+
+    # Remove ground points
+    points_without_ground = [pt for pt in points if not pt.isGround]
+    ground_points = [pt for pt in points if pt.isGround]
+    return points_without_ground, ground_points
+
+def preprocess_RGBimg(rgb_image, points, ground_points, intrinsics = Config.intrinsics):
+    """
+    RGB 이미지에서 그라운드 플레인에 해당하는 포인트를 날리는 함수.
+    
+    :param rgb_image: 원본 RGB 이미지
+    :param points: 전체 포인트 클라우드
+    :param ground_points: 그라운드로 판단된 포인트들의 인덱스
+    :param intrinsics: 카메라 내재 파라미터 (fx, fy, cx, cy)
+    :return: 그라운드 플레인이 제거된 RGB 이미지
+    """
+    # 만약 points가 리스트라면 numpy 배열로 변환
+    points = np.array([pt.position for pt in points]) if isinstance(points, list) else points
+
+    # 3D 포인트를 2D 이미지로 투영
+    ground_3d_points = points[ground_points]  # ground_points는 인덱스 리스트여야 함
+    ground_2d_points = project_to_2d(ground_3d_points, intrinsics)
+
+    # 2D 좌표를 이미지 크기 내에서 유효한 값으로 클리핑
+    h, w, _ = rgb_image.shape
+    u, v = ground_2d_points[:, 0], ground_2d_points[:, 1]
+    u = np.clip(u.astype(int), 0, w - 1)
+    v = np.clip(v.astype(int), 0, h - 1)
+
+    # 그라운드 포인트에 해당하는 픽셀을 마스크로 설정
+    mask = np.zeros((h, w), dtype=np.uint8)
+    mask[v, u] = 1
+
+    # 그라운드 영역을 제거하거나 대체 (예: 0으로 마스킹)
+    rgb_image[mask == 1] = 0  # 그라운드 부분을 검정색으로 대체
+
+    return rgb_image
 
 
 
-def depth_to_pointcloud(depth_map, intrinsic_matrix=Config.intrinsic_matrix, depth_scale=Config.depth_scale):
+def depth_to_pointcloud(depth_map, intrinsic_matrix=Config.intrinsics, depth_scale=Config.depth_scale):
     """
     Open3D를 사용하여 Depth 이미지를 포인트클라우드로 변환.
     :param depth_map: (H, W) 형태의 NumPy 배열 (Depth 이미지)
@@ -36,8 +145,50 @@ def depth_to_pointcloud(depth_map, intrinsic_matrix=Config.intrinsic_matrix, dep
 
     # ✅ Open3D GPU 기반 변환 (to_legacy() 사용 안 함)
     pcd = o3d.t.geometry.PointCloud.create_from_depth_image(depth_o3d, intrinsic_o3d)
+    #points = pcd.point.positions.numpy()  # NumPy 배열로 변환
+    #return points
+    return pcd
 
-    return pcd  # ✅ Open3D GPU 포인트클라우드 유지
+def project_to_2d(points, depth_scale = Config.depth_scale,intrinsics=Config.intrinsics): 
+    """
+    3D 포인트를 2D RGB 이미지로 투영하는 함수.
+    
+    :param points: 3D 포인트 (N x 3) numpy 배열
+    :param intrinsics: 카메라의 내재 파라미터 (fx, fy, cx, cy)
+    :return: 2D 이미지 좌표 (u, v)
+    """
+    fx, fy, cx, cy = intrinsics
+    u = (points[:, 0] * fx / points[:, 2]) + cx
+    v = (points[:, 1] * fy / points[:, 2]) + cy
+    return np.column_stack((u, v))
+
+
+# def pointcloud_visualization(points, save_path="pointcloud_plot.png"):
+#     fig = plt.figure(figsize=(10, 7))
+#     ax = fig.add_subplot(111, projection='3d')
+
+#     # X, Y, Z 좌표를 산점도로 표현
+#     ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=1, color='b')
+
+#     # 축 레이블
+#     ax.set_xlabel('X')
+#     ax.set_ylabel('Y')
+#     ax.set_zlabel('Z')
+
+#     # 플롯 보여주기 (파일로 저장도 가능)
+#     plt.savefig(save_path, dpi=300)
+#     plt.close()
+
+#     print(f"포인트 클라우드 이미지가 저장되었습니다: {save_path}")
+
+def pointcloud_visualization(points):
+    # Open3D 포인트클라우드 객체 생성
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)  # NumPy -> Open3D 변환
+
+    # 3D 시각화 실행
+    o3d.visualization.draw_geometries([pcd])
+
 
 
 #----------------- 데이터 로드 함수
