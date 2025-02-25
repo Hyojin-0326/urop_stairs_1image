@@ -1,33 +1,45 @@
-def draw_and_save_bbox(rgb_image, results, save_path="detected_result.png"):
-    """
-    YOLO 결과를 기반으로 바운딩 박스를 그려서 저장하는 함수
+import os
+import numpy as np
+import cv2
 
-    Args:
-        rgb_image (numpy.ndarray): YOLO에 입력한 원본 이미지 (numpy 배열)
-        results (list): YOLO 감지 결과 리스트
-        save_path (str): 저장할 이미지 경로
-    """
+class Config:
+    current_path = os.path.dirname(os.path.abspath(__file__))
+    rgb_path = os.path.join(current_path, "data", "rgb_data.bin")
 
-    # Matplotlib에서 RGB 순서로 보여주기 위해 변환 (cv2는 BGR 기본)
-    image_with_boxes = rgb_image.copy()
+# 이미지 크기 및 채널 수 (예제: 640x480 RGB)
+IMAGE_WIDTH = 640
+IMAGE_HEIGHT = 480
+CHANNELS = 3
+TOTAL_FRAMES = 27
+TARGET_FRAME = 9  # 0-based index, 10번째 프레임은 index 9
 
-    for result in results:
-        for box in result.boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])  # 바운딩 박스 좌표
-            cls_id = int(box.cls[0])  # 감지된 클래스 ID
-            conf = box.conf[0]  # 신뢰도
+def load_rgb_frame(bin_path, frame_idx):
+    frame_size = IMAGE_HEIGHT * IMAGE_WIDTH * CHANNELS  # 한 프레임의 데이터 크기
+    total_size = frame_size * TOTAL_FRAMES  # 전체 데이터 크기
 
-            # 바운딩 박스 그리기
-            cv2.rectangle(image_with_boxes, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            label = f"Class {cls_id}: {conf:.2f}"
-            cv2.putText(image_with_boxes, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 
-                        0.5, (0, 255, 0), 2)
+    # binary 파일 읽기
+    with open(bin_path, "rb") as f:
+        raw_data = f.read(total_size)  # 전체 데이터 로드
 
-    # Matplotlib을 사용하여 저장
-    plt.figure(figsize=(8, 6))
-    plt.imshow(image_with_boxes)
-    plt.axis("off")  # 축 제거
-    plt.savefig(save_path, bbox_inches="tight", pad_inches=0)
-    plt.close()
+    # numpy 배열로 변환
+    img_array = np.frombuffer(raw_data, dtype=np.uint8)
 
-    print(f"✅ 바운딩 박스가 포함된 이미지 저장 완료: {save_path}")
+    # 특정 프레임 추출
+    start = frame_idx * frame_size
+    end = start + frame_size
+    frame = img_array[start:end]
+
+    # 이미지 reshape (가정: RGB 순서, 높이 x 너비 x 채널)
+    frame = frame.reshape((IMAGE_HEIGHT, IMAGE_WIDTH, CHANNELS))
+    
+    return frame
+
+def save_image(image, save_path):
+    cv2.imwrite(save_path, image)
+
+if __name__ == "__main__":
+    rgb_image = load_rgb_frame(Config.rgb_path, TARGET_FRAME)
+    save_path = os.path.join(Config.current_path, "frame_10.png")
+    save_image(rgb_image, save_path)
+    print(f"10th frame saved at: {save_path}")
+

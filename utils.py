@@ -58,6 +58,38 @@ class VoxelGrid:
         
         return neighbors[:k]  # return the first k neighbors
 
+def detect_horizontal_edges_and_save(image_path, output_path):
+    # RGB 이미지 불러오기
+    img = cv2.imread(image_path)
+
+    if img is None:
+        print(f"Error: Failed to load image at {image_path}")
+        return
+    
+
+    # 이미지를 그레이스케일로 변환
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # 엣지 검출: Canny Edge Detection 사용
+    edges = cv2.Canny(gray, 100, 200)
+
+    # 수평 엣지 찾기 위한 커널 정의
+    kernel = np.ones((1, 10), np.uint8)  # 수평 방향으로 스트로크를 넓힘
+    horizontal_edges = cv2.dilate(edges, kernel, iterations=1)
+
+    # 수평 엣지에 선 그리기
+    lines = cv2.HoughLinesP(horizontal_edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
+
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(img, (x1, y1), (x2, y2), (0, 0, 255), 2)  # 빨간색 선 그리기
+
+    # 이미지 저장
+    cv2.imwrite(output_path, img)
+    print(f"Image saved at {output_path}")
+
+
 
 def preprocessPointCloud(points, voxel_size=Config.voxel_size, k=Config.k, threshold=Config.threshold):
     grid = VoxelGrid(points, voxel_size)
@@ -380,61 +412,61 @@ def get_closest_box_with_depth(boxes, depth_map):
 
 
 
-# def extract_plane_ransac(points, threshold=0.01, normal_threshold=0.95):
-#     """
-#     Depth 이미지에서 여러 평면을 추출하고, 각 평면의 최소 Depth 값을 계산하여
-#     가장 가까운 평면을 선택합니다.
-#     :param depth_map: (H, W) 형태의 Depth 이미지
-#     :param intrinsic_matrix: 카메라 내적 행렬 (fx, fy, cx, cy 포함)
-#     :param threshold: RANSAC에서 평면과의 거리 기준
-#     :param normal_threshold: 노말벡터랑 내적햇을때
-#     :return: 가장 가까운 평면에 해당하는 포인트들 (inliers)
-#     """
-#     # points를 pcd 객체로 변환
-#     pcd = o3d.geometry.PointCloud()
-#     xyz = np.array([pt.position for pt in points])
-#     pcd.points = o3d.utility.Vector3dVector(xyz)
+def extract_plane_ransac(points, threshold=0.01, normal_threshold=0.95):
+    """
+    Depth 이미지에서 여러 평면을 추출하고, 각 평면의 최소 Depth 값을 계산하여
+    가장 가까운 평면을 선택합니다.
+    :param depth_map: (H, W) 형태의 Depth 이미지
+    :param intrinsic_matrix: 카메라 내적 행렬 (fx, fy, cx, cy 포함)
+    :param threshold: RANSAC에서 평면과의 거리 기준
+    :param normal_threshold: 노말벡터랑 내적햇을때
+    :return: 가장 가까운 평면에 해당하는 포인트들 (inliers)
+    """
+    # points를 pcd 객체로 변환
+    pcd = o3d.geometry.PointCloud()
+    xyz = np.array([pt.position for pt in points])
+    pcd.points = o3d.utility.Vector3dVector(xyz)
 
-#     # RANSAC을 이용해 여러 평면 모델 추출
-#     planes = []
-#     for _ in range(10):  # 평면을 n개 추출
+    # RANSAC을 이용해 여러 평면 모델 추출
+    planes = []
+    for _ in range(10):  # 평면을 n개 추출
 
-#         #segment_plane: plane_model: ax + by + cz + d = 0에서 리스트 [a, b, c, d] 반환
-#         #inliers = [3, 7, 12, 25, 48, 102, ...] 같은 인덱스
-#         plane_model, inliers = pcd.segment_plane(distance_threshold=threshold, ransac_n=3, num_iterations=1000)
-#         inlier_cloud = pcd.select_by_index(inliers)
+        #segment_plane: plane_model: ax + by + cz + d = 0에서 리스트 [a, b, c, d] 반환
+        #inliers = [3, 7, 12, 25, 48, 102, ...] 같은 인덱스
+        plane_model, inliers = pcd.segment_plane(distance_threshold=threshold, ransac_n=3, num_iterations=1000)
+        inlier_cloud = pcd.select_by_index(inliers)
 
-#         #(0, 1, 0)이랑 내적
-#         normal_vector = np.array(plane_model[:3])
-#         dot_product = np.dot(normal_vector, np.array([0, 1, 0]))  # (0, 1, 0) 벡터와의 내적
+        #(0, 1, 0)이랑 내적
+        normal_vector = np.array(plane_model[:3])
+        dot_product = np.dot(normal_vector, np.array([0, 1, 0]))  # (0, 1, 0) 벡터와의 내적
 
-#         # 내적값이 임계값 이상이면 추가
-#         if dot_product > normal_threshold:
-#             planes.append((plane_model, inlier_cloud))
+        # 내적값이 임계값 이상이면 추가
+        if dot_product > normal_threshold:
+            planes.append((plane_model, inlier_cloud))
 
-#         # 추출된 평면을 포인트클라우드에서 제외시켜 다음 평면을 찾기 위해
-#         pcd = pcd.select_by_index(inliers, invert=True)  
+        # 추출된 평면을 포인트클라우드에서 제외시켜 다음 평면을 찾기 위해
+        pcd = pcd.select_by_index(inliers, invert=True)  
     
-#     # 각 평면의 Depth 계산 (평면에 포함된 점들의 최소 Depth 값)
-#     min_depth = float('inf')
-#     closest_plane = None
-#     closest_normal = None
-#     closest_inliers = None
+    # 각 평면의 Depth 계산 (평면에 포함된 점들의 최소 Depth 값)
+    min_depth = float('inf')
+    closest_plane = None
+    closest_normal = None
+    closest_inliers = None
     
-#     for plane_model, inlier_cloud in planes:
-#         # 평면에 포함된 점들의 깊이 값 계산
-#         inlier_points = np.asarray(inlier_cloud.points)
-#         min_plane_depth = np.min(inlier_points[:, 2])  # Z 값이 Depth에 해당
+    for plane_model, inlier_cloud in planes:
+        # 평면에 포함된 점들의 깊이 값 계산
+        inlier_points = np.asarray(inlier_cloud.points)
+        min_plane_depth = np.min(inlier_points[:, 2])  # Z 값이 Depth에 해당
         
-#         # 가장 작은 Depth 값을 가진 평면을 선택
-#         if min_plane_depth < min_depth:
-#             min_depth = min_plane_depth
-#             closest_plane = inlier_cloud
-#             closest_normal = np.array(plane_model[:3])
-#             closest_inliers = inlier_points
+        # 가장 작은 Depth 값을 가진 평면을 선택
+        if min_plane_depth < min_depth:
+            min_depth = min_plane_depth
+            closest_plane = inlier_cloud
+            closest_normal = np.array(plane_model[:3])
+            closest_inliers = inlier_points
 
     
-#     return closest_plane, closest_normal, closest_inliers
+    return closest_plane, closest_normal, closest_inliers
 
 
 

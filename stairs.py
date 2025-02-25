@@ -14,13 +14,15 @@ def measure_height(points):
     print(f"debug: extract_ransac")
 
 
-    # angle = calculate_angle(closest_normal)
-    # height=calculate_height(inlier_points)
+    angle = calculate_angle(closest_normal)
+    height=calculate_height(inlier_points)*0.1
+
+    angle_degree = np.rad2deg(angle)
 
 
-    # print(f'{angle} 라디안, {height} 미터')
+    print(f'{angle} 라디안 ( {angle_degree} 도), {height} 미터')
 
-    # return height, angle
+    return height, angle
 
 
 def calculate_angle(normal_vector):

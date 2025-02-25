@@ -20,6 +20,60 @@ depth_map, rgb_image = utils.align_depth_to_rgb(Config.depth_path, Config.rgb_pa
 results = yolo.detect(rgb_image)
 
 
+###### 만약 바운딩박스가 여러 개면 가까운거 1개만 남기고 없애기
+has_duplicate = utils.check_duplicate(results)
+if has_duplicate:
+    cls_id, bbox = utils.remove_extra_box(results, depth_map)
+else:
+    cls_id = int(results[0].boxes.cls[0])
+    bbox = tuple(map(int, results[0].boxes.xyxy[0]))
+
+yolo.draw_and_save_final_bbox(rgb_image, bbox)
+
+###### 연산량 감소를 위해 ROI 크롭
+rgb_roi, depth_roi = utils.crop_roi(bbox, rgb_image, depth_map)
+plt.imsave('saved_image.png', rgb_roi) 
+
+utils.detect_horizontal_edges_and_save("saved_image.png", "stairs_with_edge.png")
+
+
+
+###### ROI 내에서 탐지된 물체의 height 구하기
+roi_points = utils.depth_to_pointcloud(depth_roi) # depth_roi가 3d 좌표로 반환됨
+height = stairs.measure_height(roi_points)
+closest_plane, closest_normal, inlier_points = utils.extract_plane_ransac(roi_points) # roi 내에서 평면 찾음
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #----------------해야되나? groundplane 날리는거 < 근데 얘가 오히려 더 연산량 잡아먹을수도
 #전처리 위한 pointcloud 변환 -> groundplane 날리기 -> rgb img에서도 groundplane 자르기
 
@@ -36,30 +90,6 @@ results = yolo.detect(rgb_image)
 # results = yolo.detect(rgb_without_ground)
 # yolo.draw_and_save_bbox(rgb_without_ground, results) #for debug
 
-
-
-###### 만약 바운딩박스가 여러 개면 가까운거 1개만 남기고 없애기
-has_duplicate = utils.check_duplicate(results)
-if has_duplicate:
-    cls_id, bbox = utils.remove_extra_box(results, depth_map)
-else:
-    cls_id = int(results[0].boxes.cls[0])
-    bbox = tuple(map(int, results[0].boxes.xyxy[0]))
-
-yolo.draw_and_save_final_bbox(rgb_image, bbox)
-
-
-
-###### 연산량 감소를 위해 ROI 크롭
-rgb_roi, depth_roi = utils.crop_roi(bbox, rgb_image, depth_map)
-#plt.imsave('saved_image.png', rgb_roi) 디버깅용
-
-
-###### ROI 내에서 탐지된 물체의 height 구하기
-roi_points = utils.depth_to_pointcloud(depth_roi) # depth_roi가 3d 좌표로 반환됨
-height = stairs.measure_height(roi_points)
-
-closest_plane, closest_normal, inlier_points = utils.extract_plane_ransac(roi_points) # roi 내에서 평면 찾음
 
 
 
@@ -101,7 +131,6 @@ def debug_projection_rgb(rgb_image, points):
 
 
 
-debug_projection_rgb(rgb_roi, inlier_points) #inlier points부분 이미지 저장
 
 
 
