@@ -3,6 +3,7 @@ import yolo
 import time
 import os
 import stairs
+import matplotlib.pyplot as plt
 
 ##### 데이터 로드,경로 또 꼬이면 경로 yolo.config에서 수정해야 함
 class Config:
@@ -50,6 +51,8 @@ yolo.draw_and_save_final_bbox(rgb_image, bbox)
 
 ###### 연산량 감소를 위해 ROI 크롭
 rgb_roi, depth_roi = utils.crop_roi(bbox, rgb_image, depth_map)
+#plt.imsave('saved_image.png', rgb_roi) 디버깅용
+
 
 ###### ROI 내에서 탐지된 물체의 height 구하기
 points = utils.depth_to_pointcloud(depth_map) # 3d 좌표로 반환됨
