@@ -70,81 +70,7 @@ def pcd2pts(pcd):
 
     return points
 
-def filter_bottom_voxels(grid, voxel_size, fraction=0.2):
-    # 각 복셀의 중심 좌표 계산
-    voxel_centers = {}
-    for key in grid.voxel_grid.keys():
-        center = np.array(key) * voxel_size + voxel_size / 2.0
-        voxel_centers[key] = center
-
-    all_y = [center[1] for center in voxel_centers.values()]
-    min_y_voxel = min(all_y)
-    max_y_voxel = max(all_y)
-    y_threshold = min_y_voxel + (max_y_voxel - min_y_voxel) * fraction
-
-    bottom_indices = []
-    for key, center in voxel_centers.items():
-        if center[1] <= y_threshold:
-            bottom_indices.extend(grid.voxel_grid[key])
-    return bottom_indices
-
-
-
-def preprocessPointCloud(pcd, voxel_size=Config.voxel_size, k=Config.k, threshold=Config.threshold):
-    # pcd를 Point 객체 리스트로 변환
-    points = pcd2pts(pcd)
-    
-    # VoxelGrid 생성 (points를 입력)
-    grid = VoxelGrid(points, voxel_size)
-    search_radius = voxel_size * 1.5
-
-    # 기존 방식: 전체 포인트 중 하단 80%를 필터링
-    # min_y = min(pt.position[1] for pt in points)
-    # max_y = max(pt.position[1] for pt in points)
-    # bottom_80_percent = min_y + (max_y - min_y) * 0.8
-    # points_bottom_80 = [pt for pt in points if pt.position[1] <= bottom_80_percent]
-
-    # 새로운 방식: 복셀 그리드에서 하단 20% 복셀만 필터링 (필요에 따라 fraction 조절)
-    bottom_indices = filter_bottom_voxels(grid, voxel_size, fraction=0.2)
-    points_bottom = [points[i] for i in bottom_indices]
-    print("filtering using voxel grid complete")
-
-    for pt in points_bottom:
-        neighbors = grid.getKNN(pt.position, k, search_radius, points)
-        print("knn")
-        if len(neighbors) < k:
-            pt.isGround = False
-            continue
-        
-        # 공분산 행렬 계산 및 법선 추출
-        mean = np.mean([points[idx].position for idx in neighbors], axis=0)
-        covariance = np.cov([points[idx].position - mean for idx in neighbors], rowvar=False)
-
-        eigvals, eigvecs = np.linalg.eigh(covariance)
-        normal = eigvecs[:, np.argmin(eigvals)]
-        print("linearalgebra")
-        
-        if normal[2] < 0:
-            normal = -normal
-        pt.normal = normal
-        pt.isGround = np.dot(normal, np.array([0, 0, 1])) > threshold
-
-    # 지면과 비지면 포인트 분리
-    points_without_ground = [pt for pt in points if not pt.isGround]
-    ground_points = [pt for pt in points if pt.isGround]
-
-    # 다시 pcd 객체로 변환
-    pcd_without_ground = o3d.geometry.PointCloud()
-    pcd_without_ground.points = o3d.utility.Vector3dVector([pt.position for pt in points_without_ground])
-    pcd_without_ground.normals = o3d.utility.Vector3dVector([pt.normal for pt in points_without_ground])
-
-    pcd_ground = o3d.geometry.PointCloud()
-    pcd_ground.points = o3d.utility.Vector3dVector([pt.position for pt in ground_points])
-    pcd_ground.normals = o3d.utility.Vector3dVector([pt.normal for pt in ground_points])
-
-    return pcd_without_ground, pcd_ground
  
-
 
 def preprocess_RGBimg(rgb_image, points, ground_points, intrinsics = Config.intrinsics):
     """
@@ -195,6 +121,52 @@ def project_to_2d(points, depth_scale = Config.depth_scale,intrinsics=Config.int
     return np.column_stack((u, v))
 
 
+def extract_ground_plane(pcd, threshold=0.01, normal_threshold=0.95, num_ransac_trials=5):
+    """
+    pcd(PointCloud 객체)에서 RANSAC을 이용해 평면을 한 번 추출하고,
+    그 평면의 법선 벡터와 (0,0,1)의 내적이 normal_threshold 이상이면
+    해당 평면을 ground plane으로 간주하여 반환합니다.
+    
+    :param pcd: Open3D PointCloud 객체
+    :param threshold: RANSAC 평면 분할 시 평면과의 거리 임계값
+    :param normal_threshold: 평면의 법선과 (0,0,1) 벡터의 내적 임계값
+    :return: ground plane에 해당하는 inlier 포인트 클라우드와 평면 모델([a,b,c,d])
+    """
+
+    best_plane = None
+    best_inliers = []
+    best_normal = None
+
+    for _ in range(num_ransac_trials):  # 🔥 5번 RANSAC 수행
+        # 1. RANSAC으로 평면 추출
+        plane_model, inliers = pcd.segment_plane(distance_threshold=threshold,
+                                                 ransac_n=3,
+                                                 num_iterations=1000)
+        
+        # 2. 평면의 법선 벡터 추출
+        normal_vector = np.array(plane_model[:3])
+        dot_product = np.dot(normal_vector, np.array([0, 0, 1]))
+
+        # 3. (0,0,1)과 내적이 normal_threshold 이상인지 확인
+        if dot_product >= normal_threshold:
+            if len(inliers) > len(best_inliers):  # 🔥 가장 많은 inliers를 포함하는 평면 선택
+                best_plane = plane_model
+                best_inliers = inliers
+                best_normal = normal_vector
+
+        # 4. 현재 평면에 해당하는 포인트들을 제거하고 다음 RANSAC 실행
+        pcd = pcd.select_by_index(inliers, invert=True)
+
+    if best_plane is None:
+        print("Ground plane을 찾지 못했습니다.")
+        return None, None
+    
+    ground_pts = pcd.select_by_index(best_inliers)
+    return ground_pts
+
+
+
+
 def pointcloud_visualization(pcd, filename="pointcloud.png"):
     # 포인트들의 x, y, z 좌표 추출
     points = pcd2pts(pcd)
@@ -220,46 +192,6 @@ def pointcloud_visualization(pcd, filename="pointcloud.png"):
     # 그래프 이미지 저장 (PNG 또는 JPG)
     plt.savefig(filename, dpi=300)
     plt.close()  # 그래프 닫기
-
-
-
-#----------------- 데이터 로드 함수
-def load_rgb_from_bin(bin_path, frame_idx, height=480, width=640):
-    data_path = os.path.dirname(os.path.abspath(__file__))
-    meta_path = os.path.join(data_path, "data", "meta.txt")
-
-    # 🔹 1) meta.txt에서 프레임 개수 읽기
-    try:
-        with open(meta_path, "r") as f:
-            total_frames = int(f.readline().strip())  # 첫 번째 줄에 저장된 프레임 개수 읽기
-    except FileNotFoundError:
-        raise FileNotFoundError(f"❌ 메타데이터 파일 {meta_path}을 찾을 수 없습니다!")
-    except ValueError:
-        raise ValueError(f"❌ {meta_path}에서 프레임 개수를 읽을 수 없습니다!")
-
-    # 🔹 2) frame_idx가 유효한지 확인
-    if frame_idx >= total_frames or frame_idx < 0:
-        raise ValueError(f"⚠️ frame_idx {frame_idx}가 유효하지 않습니다! (총 {total_frames}개 프레임)")
-
-    # 🔹 3) .bin 파일에서 RGB 데이터 로드
-    try:
-        rgb_data = np.fromfile(bin_path, dtype=np.uint8)
-
-        # 전체 데이터가 (total_frames, H, W, 3) 크기인지 확인
-        expected_size = total_frames * height * width * 3
-        if len(rgb_data) != expected_size:
-            raise ValueError(f"❌ RGB 데이터 크기 불일치! 예상 {expected_size}, 실제 {len(rgb_data)}")
-
-        # 🔹 4) (프레임 개수, H, W, 3) 형태로 reshape
-        rgb_data = rgb_data.reshape((total_frames, height, width, 3))
-
-        # 🔹 5) frame_idx에 해당하는 프레임 반환
-        rgb_image = rgb_data[frame_idx]
-
-    except Exception as e:
-        raise RuntimeError(f"❌ RGB .bin 파일을 로드하는 중 오류 발생: {e}")
-
-    return rgb_image
 
 
 
@@ -401,61 +333,61 @@ def get_closest_box_with_depth(boxes, depth_map):
 
 
 
-# def extract_plane_ransac(points, threshold=0.01, normal_threshold=0.95):
-#     """
-#     Depth 이미지에서 여러 평면을 추출하고, 각 평면의 최소 Depth 값을 계산하여
-#     가장 가까운 평면을 선택합니다.
-#     :param depth_map: (H, W) 형태의 Depth 이미지
-#     :param intrinsic_matrix: 카메라 내적 행렬 (fx, fy, cx, cy 포함)
-#     :param threshold: RANSAC에서 평면과의 거리 기준
-#     :param normal_threshold: 노말벡터랑 내적햇을때
-#     :return: 가장 가까운 평면에 해당하는 포인트들 (inliers)
-#     """
-#     # points를 pcd 객체로 변환
-#     pcd = o3d.geometry.PointCloud()
-#     xyz = np.array([pt.position for pt in points])
-#     pcd.points = o3d.utility.Vector3dVector(xyz)
+def extract_plane_ransac(points, threshold=0.01, normal_threshold=0.95):
+    """
+    Depth 이미지에서 여러 평면을 추출하고, 각 평면의 최소 Depth 값을 계산하여
+    가장 가까운 평면을 선택합니다.
+    :param depth_map: (H, W) 형태의 Depth 이미지
+    :param intrinsic_matrix: 카메라 내적 행렬 (fx, fy, cx, cy 포함)
+    :param threshold: RANSAC에서 평면과의 거리 기준
+    :param normal_threshold: 노말벡터랑 내적햇을때
+    :return: 가장 가까운 평면에 해당하는 포인트들 (inliers)
+    """
+    # points를 pcd 객체로 변환
+    pcd = o3d.geometry.PointCloud()
+    xyz = np.array([pt.position for pt in points])
+    pcd.points = o3d.utility.Vector3dVector(xyz)
 
-#     # RANSAC을 이용해 여러 평면 모델 추출
-#     planes = []
-#     for _ in range(10):  # 평면을 n개 추출
+    # RANSAC을 이용해 여러 평면 모델 추출
+    planes = []
+    for _ in range(10):  # 평면을 n개 추출
 
-#         #segment_plane: plane_model: ax + by + cz + d = 0에서 리스트 [a, b, c, d] 반환
-#         #inliers = [3, 7, 12, 25, 48, 102, ...] 같은 인덱스
-#         plane_model, inliers = pcd.segment_plane(distance_threshold=threshold, ransac_n=3, num_iterations=1000)
-#         inlier_cloud = pcd.select_by_index(inliers)
+        #segment_plane: plane_model: ax + by + cz + d = 0에서 리스트 [a, b, c, d] 반환
+        #inliers = [3, 7, 12, 25, 48, 102, ...] 같은 인덱스
+        plane_model, inliers = pcd.segment_plane(distance_threshold=threshold, ransac_n=3, num_iterations=1000)
+        inlier_cloud = pcd.select_by_index(inliers)
 
-#         #(0, 1, 0)이랑 내적
-#         normal_vector = np.array(plane_model[:3])
-#         dot_product = np.dot(normal_vector, np.array([0, 1, 0]))  # (0, 1, 0) 벡터와의 내적
+        #(0, 1, 0)이랑 내적
+        normal_vector = np.array(plane_model[:3])
+        dot_product = np.dot(normal_vector, np.array([0, 1, 0]))  # (0, 1, 0) 벡터와의 내적
 
-#         # 내적값이 임계값 이상이면 추가
-#         if dot_product > normal_threshold:
-#             planes.append((plane_model, inlier_cloud))
+        # 내적값이 임계값 이상이면 추가
+        if dot_product > normal_threshold:
+            planes.append((plane_model, inlier_cloud))
 
-#         # 추출된 평면을 포인트클라우드에서 제외시켜 다음 평면을 찾기 위해
-#         pcd = pcd.select_by_index(inliers, invert=True)  
+        # 추출된 평면을 포인트클라우드에서 제외시켜 다음 평면을 찾기 위해
+        pcd = pcd.select_by_index(inliers, invert=True)  
     
-#     # 각 평면의 Depth 계산 (평면에 포함된 점들의 최소 Depth 값)
-#     min_depth = float('inf')
-#     closest_plane = None
-#     closest_normal = None
-#     closest_inliers = None
+    # 각 평면의 Depth 계산 (평면에 포함된 점들의 최소 Depth 값)
+    min_depth = float('inf')
+    closest_plane = None
+    closest_normal = None
+    closest_inliers = None
     
-#     for plane_model, inlier_cloud in planes:
-#         # 평면에 포함된 점들의 깊이 값 계산
-#         inlier_points = np.asarray(inlier_cloud.points)
-#         min_plane_depth = np.min(inlier_points[:, 2])  # Z 값이 Depth에 해당
+    for plane_model, inlier_cloud in planes:
+        # 평면에 포함된 점들의 깊이 값 계산
+        inlier_points = np.asarray(inlier_cloud.points)
+        min_plane_depth = np.min(inlier_points[:, 2])  # Z 값이 Depth에 해당
         
-#         # 가장 작은 Depth 값을 가진 평면을 선택
-#         if min_plane_depth < min_depth:
-#             min_depth = min_plane_depth
-#             closest_plane = inlier_cloud
-#             closest_normal = np.array(plane_model[:3])
-#             closest_inliers = inlier_points
+        # 가장 작은 Depth 값을 가진 평면을 선택
+        if min_plane_depth < min_depth:
+            min_depth = min_plane_depth
+            closest_plane = inlier_cloud
+            closest_normal = np.array(plane_model[:3])
+            closest_inliers = inlier_points
 
     
-#     return closest_plane, closest_normal, closest_inliers
+    return closest_plane, closest_normal, closest_inliers
 
 
 
@@ -478,6 +410,46 @@ def measure_height(cls_id,rgb_roi, depth_roi, model):
     #❗디버깅용
     print("높이 측정중")
     return angle, height
+
+
+#----------------- 데이터 로드 함수
+def load_rgb_from_bin(bin_path, frame_idx, height=480, width=640):
+    data_path = os.path.dirname(os.path.abspath(__file__))
+    meta_path = os.path.join(data_path, "data", "meta.txt")
+
+    # 🔹 1) meta.txt에서 프레임 개수 읽기
+    try:
+        with open(meta_path, "r") as f:
+            total_frames = int(f.readline().strip())  # 첫 번째 줄에 저장된 프레임 개수 읽기
+    except FileNotFoundError:
+        raise FileNotFoundError(f"❌ 메타데이터 파일 {meta_path}을 찾을 수 없습니다!")
+    except ValueError:
+        raise ValueError(f"❌ {meta_path}에서 프레임 개수를 읽을 수 없습니다!")
+
+    # 🔹 2) frame_idx가 유효한지 확인
+    if frame_idx >= total_frames or frame_idx < 0:
+        raise ValueError(f"⚠️ frame_idx {frame_idx}가 유효하지 않습니다! (총 {total_frames}개 프레임)")
+
+    # 🔹 3) .bin 파일에서 RGB 데이터 로드
+    try:
+        rgb_data = np.fromfile(bin_path, dtype=np.uint8)
+
+        # 전체 데이터가 (total_frames, H, W, 3) 크기인지 확인
+        expected_size = total_frames * height * width * 3
+        if len(rgb_data) != expected_size:
+            raise ValueError(f"❌ RGB 데이터 크기 불일치! 예상 {expected_size}, 실제 {len(rgb_data)}")
+
+        # 🔹 4) (프레임 개수, H, W, 3) 형태로 reshape
+        rgb_data = rgb_data.reshape((total_frames, height, width, 3))
+
+        # 🔹 5) frame_idx에 해당하는 프레임 반환
+        rgb_image = rgb_data[frame_idx]
+
+    except Exception as e:
+        raise RuntimeError(f"❌ RGB .bin 파일을 로드하는 중 오류 발생: {e}")
+
+    return rgb_image
+
 
 
 

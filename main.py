@@ -15,16 +15,14 @@ class Config:
     model_path = os.path.join(current_path, "yolo", "best.pt")
     rgb_path = os.path.join(current_path, "data", "rgb_data.png")
     pointcloud_path = os.path.join(current_path, "data", "pointcloud.pcd")
-    depth_path = os.path.join(current_path, "data", "depth_data.")
+    depth_path = os.path.join(current_path, "data", "depth_data.png")
 
 
 
 
 #임시: 데이터 읽어오기
 rgb_image = cv2.imread(Config.rgb_path)
-pcd = o3d.io.read_point_cloud(Config.pointcloud_path)
-
-
+depth_map = cv2.imread(Config.depth_path)
 
 
 # ##### YOLO 모델 로드
@@ -32,39 +30,21 @@ results = yolo.detect(rgb_image)
 yolo.draw_and_save_bbox(rgb_image, results) # 디텍션 이미지 저장
 
 
-# ----------------groundplane 날리는거 
-# roundplane 날리기 -> rgb img에서도 groundplane 자르기
-pcd_without_ground, pcd_ground = utils.preprocessPointCloud(pcd)
+##### 만약 바운딩박스가 여러 개면 가까운거 1개만 남기고 없애기
+has_duplicate = utils.check_duplicate(results)
+if has_duplicate:
+    cls_id, bbox = utils.remove_extra_box(results, depth_map)
+else:
+    cls_id = int(results[0].boxes.cls[0])
+    bbox = tuple(map(int, results[0].boxes.xyxy[0]))
+
+yolo.draw_and_save_final_bbox(rgb_image, bbox)
 
 
 
-
-#디버깅용
-#utils.pointcloud_visualization(pcd)
-
-
-# points_without_ground, ground_points = utils.preprocessPointCloud(points)
-
-# rgb_without_ground = utils.preprocess_RGBimg(rgb_image, points, ground_points)
-
-# results = yolo.detect(rgb_without_ground)
-
-
-###### 만약 바운딩박스가 여러 개면 가까운거 1개만 남기고 없애기
-# has_duplicate = utils.check_duplicate(results)
-# if has_duplicate:
-#     cls_id, bbox = utils.remove_extra_box(results, depth_map)
-# else:
-#     cls_id = int(results[0].boxes.cls[0])
-#     bbox = tuple(map(int, results[0].boxes.xyxy[0]))
-
-# yolo.draw_and_save_final_bbox(rgb_image, bbox)
-
-
-
-###### 연산량 감소를 위해 ROI 크롭
-# rgb_roi, depth_roi = utils.crop_roi(bbox, rgb_image, depth_map)
-# #plt.imsave('saved_image.png', rgb_roi) 디버깅용
+##### 연산량 감소를 위해 ROI 크롭
+rgb_roi, depth_roi = utils.crop_roi(bbox, rgb_image, depth_map)
+plt.imsave('saved_image.png', rgb_roi) 
 
 
 # ###### ROI 내에서 탐지된 물체의 height 구하기
