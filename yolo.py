@@ -12,22 +12,15 @@ import os
 class Config:
     current_path = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(current_path, "yolo", "best.pt")
-    meta_path = os.path.join(current_path, "data", "meta.txt")
-    rgb_path = os.path.join(current_path, "data", "rgb_data.bin")
-    depth_path = os.path.join(current_path, "data", "depth_data.bin")
-
-    # trt_path=os.path.join(current_path, "yolo", "yolo_model.trt")
-    # engine_path = os.path.join(current_path, "yolo", "yolo_model.trt")
-    # onnx_path=os.path.join(current_path, "yolo", "yolo_model.onnx")
-    
+    rgb_path = os.path.join(current_path, "data", "rgb_data.png")
+    depth_path = os.path.join(current_path, "data", "depth_data.")
 
 
 def detect(rgb_image):
     model = YOLO(Config.model_path)
-    resized_image = cv2.resize(rgb_image, (640, 480))
 
-    # 2. 이미지를 RGB 형식으로 변환 (이미지 로딩 시 BGR일 수 있음)
-    #rgb_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+    if rgb_image is None:
+        raise FileNotFoundError(f"RGB 이미지 파일을 찾을 수 없습니다: {Config.rgb_path}")
 
     # 3. 이미지를 텐서로 변환하고, 정규화 (0~255 -> 0~1)
     tensor_image = torch.from_numpy(rgb_image).float()  # numpy 배열을 텐서로 변환

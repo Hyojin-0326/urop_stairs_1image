@@ -29,8 +29,8 @@ class Config:
 
 class Point:
     def __init__(self, position, normal=None, isGround=False):
-        self.position = position # 3d 좌표
-        self.normal = normal # 법벡터
+        self.position = position # 3d 좌표(np)
+        self.normal = normal # 법벡터(np)
         self.isGround = isGround 
 
 class VoxelGrid:
@@ -57,43 +57,94 @@ class VoxelGrid:
         neighbors = [idx for idx in indices[0] if np.linalg.norm(points[idx].position - position) <= search_radius]
         
         return neighbors[:k]  # return the first k neighbors
+    
+def pcd2pts(pcd):
+    points_np = np.asarray(pcd.points)  # 포인트 좌표 (N,3)
+    normals_np = np.asarray(pcd.normals) if pcd.has_normals() else None  # 법선 벡터 (N,3) or None
+    
+    points = []
+    
+    for i, position in enumerate(points_np):
+        normal = normals_np[i] if normals_np is not None else None
+        points.append(Point(position, normal, isGround=False))  # 초기값으로 isGround=False 설정
+
+    return points
+
+def filter_bottom_voxels(grid, voxel_size, fraction=0.2):
+    # 각 복셀의 중심 좌표 계산
+    voxel_centers = {}
+    for key in grid.voxel_grid.keys():
+        center = np.array(key) * voxel_size + voxel_size / 2.0
+        voxel_centers[key] = center
+
+    all_y = [center[1] for center in voxel_centers.values()]
+    min_y_voxel = min(all_y)
+    max_y_voxel = max(all_y)
+    y_threshold = min_y_voxel + (max_y_voxel - min_y_voxel) * fraction
+
+    bottom_indices = []
+    for key, center in voxel_centers.items():
+        if center[1] <= y_threshold:
+            bottom_indices.extend(grid.voxel_grid[key])
+    return bottom_indices
 
 
-def preprocessPointCloud(points, voxel_size=Config.voxel_size, k=Config.k, threshold=Config.threshold):
+
+def preprocessPointCloud(pcd, voxel_size=Config.voxel_size, k=Config.k, threshold=Config.threshold):
+    # pcd를 Point 객체 리스트로 변환
+    points = pcd2pts(pcd)
+    
+    # VoxelGrid 생성 (points를 입력)
     grid = VoxelGrid(points, voxel_size)
     search_radius = voxel_size * 1.5
 
-    # Using the bottom 80% of the point cloud
-    min_y = np.min([pt.position[1] for pt in points])
-    max_y = np.max([pt.position[1] for pt in points])
-    bottom_80_percent = min_y + (max_y - min_y) * 0.2  # 20% 지점부터 하단 80%
+    # 기존 방식: 전체 포인트 중 하단 80%를 필터링
+    # min_y = min(pt.position[1] for pt in points)
+    # max_y = max(pt.position[1] for pt in points)
+    # bottom_80_percent = min_y + (max_y - min_y) * 0.8
+    # points_bottom_80 = [pt for pt in points if pt.position[1] <= bottom_80_percent]
 
-    points_bottom_80 = [pt for pt in points if pt.position[1] <= bottom_80_percent]
+    # 새로운 방식: 복셀 그리드에서 하단 20% 복셀만 필터링 (필요에 따라 fraction 조절)
+    bottom_indices = filter_bottom_voxels(grid, voxel_size, fraction=0.2)
+    points_bottom = [points[i] for i in bottom_indices]
+    print("filtering using voxel grid complete")
 
-    for pt in points_bottom_80:
+    for pt in points_bottom:
         neighbors = grid.getKNN(pt.position, k, search_radius, points)
-        
+        print("knn")
         if len(neighbors) < k:
             pt.isGround = False
             continue
         
-        # Compute covariance matrix
+        # 공분산 행렬 계산 및 법선 추출
         mean = np.mean([points[idx].position for idx in neighbors], axis=0)
         covariance = np.cov([points[idx].position - mean for idx in neighbors], rowvar=False)
 
-        # Eigen decomposition
         eigvals, eigvecs = np.linalg.eigh(covariance)
-        normal = eigvecs[:, np.argmin(eigvals)]  # Smallest eigenvalue corresponds to normal
-
+        normal = eigvecs[:, np.argmin(eigvals)]
+        print("linearalgebra")
+        
         if normal[2] < 0:
             normal = -normal
         pt.normal = normal
         pt.isGround = np.dot(normal, np.array([0, 0, 1])) > threshold
 
-    # Remove ground points
-    points_without_ground = [pt for pt in points if not pt.isGround] # point 객체
+    # 지면과 비지면 포인트 분리
+    points_without_ground = [pt for pt in points if not pt.isGround]
     ground_points = [pt for pt in points if pt.isGround]
-    return points_without_ground, ground_points
+
+    # 다시 pcd 객체로 변환
+    pcd_without_ground = o3d.geometry.PointCloud()
+    pcd_without_ground.points = o3d.utility.Vector3dVector([pt.position for pt in points_without_ground])
+    pcd_without_ground.normals = o3d.utility.Vector3dVector([pt.normal for pt in points_without_ground])
+
+    pcd_ground = o3d.geometry.PointCloud()
+    pcd_ground.points = o3d.utility.Vector3dVector([pt.position for pt in ground_points])
+    pcd_ground.normals = o3d.utility.Vector3dVector([pt.normal for pt in ground_points])
+
+    return pcd_without_ground, pcd_ground
+ 
+
 
 def preprocess_RGBimg(rgb_image, points, ground_points, intrinsics = Config.intrinsics):
     """
@@ -129,37 +180,6 @@ def preprocess_RGBimg(rgb_image, points, ground_points, intrinsics = Config.intr
 
 
 
-def depth_to_pointcloud(depth_map, intrinsic_matrix = Config.intrinsic_matrix, depth_scale=Config.depth_scale):
-
-    fx = intrinsic_matrix[0, 0]
-    fy = intrinsic_matrix[1, 1]
-    cx = intrinsic_matrix[0, 2]
-    cy = intrinsic_matrix[1, 2]
-    
-    height, width = depth_map.shape
-    points = []
-    
-    # 각 픽셀에 대해 3D 좌표 계산
-    for v in range(height):
-        for u in range(width):
-            depth_val = depth_map[v, u] / depth_scale  # mm를 meter로 변환
-            
-            if depth_val == 0:  # 깊이 값이 0인 경우는 건너뛰기
-                continue
-            
-            # 2D 좌표 (u, v)를 3D 좌표 (X, Y, Z)로 변환
-            X = (u - cx) * depth_val / fx
-            Y = (v - cy) * depth_val / fy
-            Z = depth_val
-            
-            # Point 객체 생성
-            pt = Point(position=np.array([X, Y, Z]))
-            points.append(pt)
-            print(f"Pixel ({u}, {v}): Depth: {depth_val}, X: {X}, Y: {Y}, Z: {Z}")
-
-    
-    return points
-
 
 def project_to_2d(points, depth_scale = Config.depth_scale,intrinsics=Config.intrinsics): 
     """
@@ -175,8 +195,9 @@ def project_to_2d(points, depth_scale = Config.depth_scale,intrinsics=Config.int
     return np.column_stack((u, v))
 
 
-def pointcloud_visualization(points, filename="pointcloud.png"):
+def pointcloud_visualization(pcd, filename="pointcloud.png"):
     # 포인트들의 x, y, z 좌표 추출
+    points = pcd2pts(pcd)
     x_coords = [pt.position[0] for pt in points]
     y_coords = [pt.position[1] for pt in points]
     z_coords = [pt.position[2] for pt in points]
