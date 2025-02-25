@@ -9,26 +9,18 @@ import open3d as o3d
 #----------- 파이프라인
 def measure_height(points):
     
-    closest_plane, closest_normal = utils.extract_plane_ransac(points) #closest_plane은 open3d Pointclout 객체임
+    closest_plane, closest_normal,inlier_points = utils.extract_plane_ransac(points) #closest_plane은 open3d Pointclout 객체임
 
     print(f"debug: extract_ransac")
 
-    angle = calculate_angle(closest_normal)
 
-    #plane 안에 해당하는 점(inlier 인덱스를 받든지, inlier points를 받든지) 해서 넘파잉 좌표로 바꾸고 calcu;ate_height에 넘겨야함.
-
-
+    # angle = calculate_angle(closest_normal)
+    # height=calculate_height(inlier_points)
 
 
+    # print(f'{angle} 라디안, {height} 미터')
 
-
-
-    height=calculate_height(closest_plane)
-
-
-    print(f'{angle} 라디안, {height} 미터')
-
-    return angle
+    # return height, angle
 
 
 def calculate_angle(normal_vector):
@@ -60,6 +52,7 @@ def calculate_height(pcld_np):
     # 높이는 윗쪽 엣지의 평균 높이에서 아랫쪽 엣지의 평균 높이를 빼서 계산
     height = upper_edge_mean - lower_edge_mean
     
-    print("debug: calculate_angle")
+    print("debug: calcul_height")
     
     return height
+
